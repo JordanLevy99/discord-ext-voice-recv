@@ -182,6 +182,7 @@ class AudioReader:
 
 class PacketDecryptor:
     def __init__(self, mode: SupportedModes, secret_key: bytes) -> None:
+        self.key = secret_key
         try:
             self.decrypt_rtp: DecryptRTP = getattr(self, '_decrypt_rtp_' + mode)
             self.decrypt_rtcp: DecryptRTCP = getattr(self, '_decrypt_rtcp_' + mode)
@@ -248,6 +249,35 @@ class PacketDecryptor:
         result = self.box.decrypt(data[8:-4], bytes(nonce))
 
         return header + result
+    
+        # Add the new decryption method
+    def _decrypt_rtp_aead_xchacha20_poly1305_rtpsize(self, header: bytes, encrypted: bytes) -> bytes:
+        """
+        Decrypt RTP packets using AEAD XChaCha20-Poly1305 with RTP size
+        
+        The nonce bytes are the RTP header, with the size of the RTP packet 
+        included in the nonce
+        """
+        if len(encrypted) < 16:  # Minimum size for auth tag
+            return b''
+            
+        # Get the RTP header size (should include CSRCs and extension preamble)
+        rtp_size = len(header)
+        
+        # Create nonce (12 bytes required by XChaCha20-Poly1305)
+        # First bytes are RTP header, padded with zeros if needed
+        nonce = bytearray(12)
+        nonce[:min(len(header), 12)] = header[:min(len(header), 12)]
+        
+        # Include RTP size in last 4 bytes of nonce
+        nonce[-4:] = rtp_size.to_bytes(4, 'big')
+        
+        try:
+            # Use PyNaCl for XChaCha20-Poly1305 decryption
+            box = nacl.secret.aead.ChaCha20Poly1305_IETF(self.key)
+            return box.decrypt(encrypted, nonce, header)
+        except nacl.exceptions.CryptoError:
+            return b''
 
 
 class SpeakingTimer(threading.Thread):
