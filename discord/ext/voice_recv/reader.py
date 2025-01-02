@@ -250,36 +250,54 @@ class PacketDecryptor:
 
         return header + result
     
-        # Add the new decryption method
-    def _decrypt_rtp_aead_xchacha20_poly1305_rtpsize(self, header: bytes, encrypted: bytes) -> bytes:
+    def _decrypt_rtp_aead_xchacha20_poly1305_rtpsize(self, packet: RTPPacket) -> bytes:
         """
         Decrypt RTP packets using AEAD XChaCha20-Poly1305 with RTP size
-        
-        The nonce bytes are the RTP header, with the size of the RTP packet 
-        included in the nonce
         """
-        if len(encrypted) < 16:  # Minimum size for auth tag
+        if len(packet.data) < 16:  # Minimum size for auth tag
             return b''
             
-        # Get the RTP header size (should include CSRCs and extension preamble)
-        rtp_size = len(header)
-        
-        # Create nonce (12 bytes required by XChaCha20-Poly1305)
-        # First bytes are RTP header, padded with zeros if needed
-        nonce = bytearray(12)
-        nonce[:min(len(header), 12)] = header[:min(len(header), 12)]
-        
-        # Include RTP size in last 4 bytes of nonce
-        nonce[-4:] = rtp_size.to_bytes(4, 'big')
+        # Get packet size for nonce
+        packet_size = len(packet.header)
+            
+        # Create nonce (24 bytes required by XChaCha20-Poly1305)
+        nonce = bytearray(24)  # XChaCha20 requires 24 bytes
+        nonce[:min(len(packet.header), 20)] = packet.header[:min(len(packet.header), 20)]  # Use up to 20 bytes of header
+        nonce[-4:] = packet_size.to_bytes(4, 'big')  # Last 4 bytes are packet size
         
         try:
-            # Use PyNaCl for XChaCha20-Poly1305 decryption
-            box = nacl.secret.aead.ChaCha20Poly1305_IETF(self.key)
-            return box.decrypt(encrypted, nonce, header)
-        except nacl.exceptions.CryptoError:
+            result = self.box.decrypt(bytes(packet.data), bytes(nonce))
+            
+            if packet.extended:
+                offset = packet.update_ext_headers(result)
+                result = result[offset:]
+                
+            return result
+        except Exception as e:
+            print(f"Decryption error: {e}")
             return b''
 
-
+    def _decrypt_rtcp_aead_xchacha20_poly1305_rtpsize(self, data: bytes) -> bytes:
+        """
+        Decrypt RTCP packets using AEAD XChaCha20-Poly1305 with RTP size
+        """
+        if len(data) < 24:  # Minimum size for header + auth tag
+            return b''
+            
+        header = data[:8]
+        packet_size = len(header)
+        
+        # Create nonce
+        nonce = bytearray(24)
+        nonce[:8] = header  # Use RTCP header
+        nonce[-4:] = packet_size.to_bytes(4, 'big')
+        
+        try:
+            result = self.box.decrypt(data[8:], bytes(nonce))
+            return header + result
+        except Exception as e:
+            print(f"RTCP Decryption error: {e}")
+            return b''
 class SpeakingTimer(threading.Thread):
     def __init__(self, reader: AudioReader):
         super().__init__(daemon=True, name=f'speaking-timer-{id(self):x}')
